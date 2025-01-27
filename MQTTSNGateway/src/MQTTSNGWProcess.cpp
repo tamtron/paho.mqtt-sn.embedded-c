@@ -26,6 +26,10 @@
 #include "MQTTSNGWProcess.h"
 #include "Threading.h"
 
+#include <QTextStream>
+#include <QFile>
+#include <QDebug>
+
 using namespace std;
 using namespace MQTTSNGW;
 
@@ -87,38 +91,10 @@ void Process::initialize(int argc, char** argv)
     signal(SIGTERM, signalHandler);
     signal(SIGHUP, signalHandler);
 
-    int opt;
-    while ((opt = getopt(_argc, _argv, "f:")) != -1)
-    {
-        if (opt == 'f')
-        {
-            string config = string(optarg);
-            size_t pos = 0;
-            if ((pos = config.find_last_of("/")) == string::npos)
-            {
-                _configFile = optarg;
-            }
-            else
-            {
-                _configFile = config.substr(pos + 1, config.size() - pos - 1);
-                _configDir = config.substr(0, pos + 1);
-            }
-        }
-    }
-    _rbsem = new NamedSemaphore(MQTTSNGW_RB_SEMAPHOR_NAME, 0);
-    _rb = new RingBuffer(_configDir.c_str());
+    _configDir = ":/config/android/assets/config/";
+    _configFile = "gateway.conf";
 
-    if (getParam("ShearedMemory", param) == 0)
-    {
-        if (!strcasecmp(param, "YES"))
-        {
-            _log = 1;
-        }
-        else
-        {
-            _log = 0;
-        }
-    }
+    _rb = new RingBuffer(size_t(1024));
 }
 
 void Process::putLog(const char* format, ...)
@@ -155,74 +131,70 @@ char** Process::getArgv()
 
 int Process::getParam(const char* parameter, char* value)
 {
-    char str[MQTTSNGW_PARAM_MAX];
     char param[MQTTSNGW_PARAM_MAX];
-    memset(str, 0, sizeof(str));
     memset(param, 0, sizeof(param));
-    FILE *fp;
 
-    int i = 0, j = 0;
-    string configPath = _configDir + _configFile;
+    QString configPath = QString::fromStdString(_configDir + _configFile);
 
-    if ((fp = fopen(configPath.c_str(), "r")) == NULL)
-    {
+    QFile file(configPath);
+
+    if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) {
         throw Exception("Config file not found:\n\nUsage: Command -f path/config_file_name\n", 0);
     }
 
+    QTextStream in(&file);
     int paramlen = strlen(parameter);
 
-    while (true)
-    {
-        int pos = 0;
-        int len = 0;
-        if (fgets(str, MQTTSNGW_PARAM_MAX - 1, fp) == NULL)
-        {
-            fclose(fp);
-            return -3;
-        }
-        if (str[0] == '#' || str[0] == '\n')
-        {
+    while (!in.atEnd()) {
+        QString line = in.readLine();
+        QByteArray ba = line.toUtf8();
+        const char* str = ba.constData();
+
+               // Ignore comments and empty lines
+        if (str[0] == '#' || str[0] == '\n') {
             continue;
         }
 
-        len = strlen(str);
-        for (pos = 0; i < len; pos++)
-        {
-            if (str[pos] == '=')
-            {
+        int len = strlen(str);
+        int pos = 0;
+
+               // Find '=' position
+        for (pos = 0; pos < len; pos++) {
+            if (str[pos] == '=') {
                 break;
             }
         }
 
-        if (pos == paramlen)
-        {
-            if (strncmp(str, parameter, paramlen) == 0)
-            {
-                strcpy(param, str + pos + 1);
-                param[len - pos - 2] = '\0';
+        if (pos == paramlen && strncmp(str, parameter, paramlen) == 0) {
+            strncpy(param, str + pos + 1, MQTTSNGW_PARAM_MAX - 1);
 
-
-                for (i = strlen(param) - 1; i >= 0 && isspace(param[i]); i--)
-                    ;
-                param[i + 1] = '\0';
-                for (i = 0; isspace(param[i]); i++)
-                    ;
-                if (i > 0)
-                {
-                    j = 0;
-                    while (param[i])
-                        param[j++] = param[i++];
-                    param[j] = '\0';
-                }
-                strcpy(value, param);
-                fclose(fp);
-                return 0;
+                   // Trim trailing spaces
+            int i = strlen(param) - 1;
+            while (i >= 0 && isspace(param[i])) {
+                param[i--] = '\0';
             }
+
+                   // Trim leading spaces
+            i = 0;
+            while (isspace(param[i])) {
+                i++;
+            }
+
+            if (i > 0) {
+                // Shift the string to the start, removing leading spaces
+                memmove(param, param + i, strlen(param + i) + 1);
+            }
+
+            strncpy(value, param, MQTTSNGW_PARAM_MAX - 1);
+            file.close();
+            return 0;
         }
     }
-    fclose(fp);
-    return -2;
+
+    file.close();
+    return -2; // Parameter not found
 }
+
 
 const char* Process::getLog()
 {

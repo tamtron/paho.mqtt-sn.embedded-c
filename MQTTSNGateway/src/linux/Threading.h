@@ -94,21 +94,23 @@ private:
  =====================================*/
 class RingBuffer
 {
-public:
-    RingBuffer(const char* keyDirectory = MQTTSNGW_KEY_DIRECTORY);
-	~RingBuffer();
-	void put(char* buffer);
-	int get(char* buffer, int bufferLength);
-	void reset();
-private:
-	void* _shmaddr;
-	uint16_t* _length;
-	uint16_t* _start;
-	uint16_t* _end;
-	char* _buffer;
-	int _shmid;
-	Mutex* _pmx;
-	bool _createFlg;
+  public:
+    RingBuffer(size_t bufferSize);
+    void put(char* buffer);
+    ~RingBuffer();
+    int get(char* buffer, int bufferLength);
+    void reset();
+  private:
+    void* _shmaddr;
+    pthread_mutex_t _mutex;
+    size_t _bufferSize;
+    uint16_t _length;
+    uint16_t* _start;
+    uint16_t* _end;
+    char* _buffer;
+    int _shmid;
+    Mutex* _pmx;
+    bool _createFlg;
 };
 
 

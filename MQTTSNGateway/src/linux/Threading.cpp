@@ -63,60 +63,51 @@ int sem_timedwait(sem_t *sem, const struct timespec *abs_timeout)
 
 Mutex::Mutex(void)
 {
-	pthread_mutexattr_t attr;
-	pthread_mutexattr_init(&attr);
-	pthread_mutex_init(&_mutex, &attr);
-	pthread_mutexattr_settype(&attr, PTHREAD_MUTEX_ERRORCHECK);
-	_shmid = 0;
-	_pmutex = 0;
+    pthread_mutexattr_t attr;
+    pthread_mutexattr_init(&attr);
+    pthread_mutex_init(&_mutex, &attr);
+    pthread_mutexattr_settype(&attr, PTHREAD_MUTEX_ERRORCHECK);
+    _shmid = 0;
+    _pmutex = 0;
 }
 
 Mutex::Mutex(const char* fileName)
 {
-	pthread_mutexattr_t attr;
+    pthread_mutexattr_t attr;
+    pthread_mutexattr_init(&attr);
+    if (pthread_mutex_init(&_mutex, &attr) != 0) {
+        throw Exception("Mutex can't initialize.", -1);
+    }
+    _shmid = 0;
+    _pmutex = &_mutex;
 
-	key_t key = ftok(fileName, 1);
+    pthread_mutexattr_init(&attr);
 
-	if ((_shmid = shmget(key, sizeof(pthread_mutex_t), IPC_CREAT | 0666)) < 0)
-	{
-		throw Exception("Mutex can't create a shared memory.", -1);
-	}
-	_pmutex = (pthread_mutex_t*) shmat(_shmid, NULL, 0);
-	if (_pmutex == (void*) -1)
-	{
-		throw Exception("Mutex can't attach shared memory.", -1);
-	}
-
-	pthread_mutexattr_init(&attr);
-
-	if (pthread_mutexattr_setpshared(&attr, PTHREAD_PROCESS_SHARED) != 0)
-	{
-		throw Exception("Mutex can't set the process-shared flag", -1);
-	}
-	if (pthread_mutex_init(_pmutex, &attr) != 0)
-	{
-		throw Exception("Mutex can't initialize.", -1);
-	}
+    if (pthread_mutexattr_setpshared(&attr, PTHREAD_PROCESS_SHARED) != 0)
+    {
+        throw Exception("Mutex can't set the process-shared flag", -1);
+    }
+    if (pthread_mutex_init(_pmutex, &attr) != 0)
+    {
+        throw Exception("Mutex can't initialize.", -1);
+    }
 }
 
 Mutex::~Mutex(void)
 {
-	if (_pmutex)
-	{
-		pthread_mutex_lock(_pmutex);
-		pthread_mutex_unlock(_pmutex);
-		pthread_mutex_destroy(_pmutex);
-	}
-	else
-	{
-		pthread_mutex_lock(&_mutex);
-		pthread_mutex_unlock(&_mutex);
-		pthread_mutex_destroy(&_mutex);
-	}
-	if (_shmid)
-	{
-		shmctl(_shmid, IPC_RMID, NULL);
-	}
+    if (_pmutex)
+    {
+        pthread_mutex_lock(_pmutex);
+        pthread_mutex_unlock(_pmutex);
+        pthread_mutex_destroy(_pmutex);
+    }
+    else
+    {
+        pthread_mutex_lock(&_mutex);
+        pthread_mutex_unlock(&_mutex);
+        pthread_mutex_destroy(&_mutex);
+    }
+
 }
 
 void Mutex::lock(void)
@@ -256,236 +247,160 @@ void NamedSemaphore::timedwait(uint16_t millsec)
 /*=========================================
  Class RingBuffer
  =========================================*/
-RingBuffer::RingBuffer(const char* keyDirectory)
+
+RingBuffer::RingBuffer(size_t bufferSize)
+    : _bufferSize(bufferSize)
 {
-	int fp = 0;
-	string fileName = keyDirectory + string(MQTTSNGW_RINGBUFFER_KEY);
-	fp = open(fileName.c_str(), O_CREAT, S_IRGRP);
-	if ( fp > 0 )
-	{
-		close(fp);
-	}
-
-	fileName = keyDirectory + string(MQTTSNGW_RB_MUTEX_KEY);
-	fp = open(fileName.c_str(), O_CREAT, S_IRGRP);
-	if ( fp > 0 )
-	{
-		close(fp);
-	}
-
-	key_t key = ftok(MQTTSNGW_RINGBUFFER_KEY, 1);
-
-	if ((_shmid = shmget(key, PROCESS_LOG_BUFFER_SIZE,
-	IPC_CREAT | IPC_EXCL | 0666)) >= 0)
-	{
-		if ((_shmaddr = (uint16_t*) shmat(_shmid, NULL, 0)) != (void*) -1)
-		{
-			_length = (uint16_t*) _shmaddr;
-			_start = (uint16_t*) _length + sizeof(uint16_t*);
-			_end = (uint16_t*) _start + sizeof(uint16_t*);
-			_buffer = (char*) _end + sizeof(uint16_t*);
-			_createFlg = true;
-
-			*_length = PROCESS_LOG_BUFFER_SIZE - sizeof(uint16_t*) * 3 - 16;
-			*_start = *_end = 0;
-		}
-		else
-		{
-			throw Exception("RingBuffer can't attach shared memory.", -1);
-		}
-	}
-	else if ((_shmid = shmget(key, PROCESS_LOG_BUFFER_SIZE, IPC_CREAT | 0666)) != -1)
-	{
-		if ((_shmaddr = (uint16_t*) shmat(_shmid, NULL, 0)) != (void*) -1)
-		{
-			_length = (uint16_t*) _shmaddr;
-			_start = (uint16_t*) _length + sizeof(uint16_t*);
-			_end = (uint16_t*) _start + sizeof(uint16_t*);
-			_buffer = (char*) _end + sizeof(uint16_t*);
-			_createFlg = false;
-		}
-		else
-		{
-			throw Exception("RingBuffer can't create a shared memory.", -1);
-		}
-	}
-	else
-	{
-		throw Exception( "RingBuffer can't create a shared memory.", -1);
-	}
-
-	_pmx = new Mutex(MQTTSNGW_RB_MUTEX_KEY);
+    pthread_mutex_init(&_mutex, NULL);
+    _buffer = (char*)malloc(_bufferSize);
+    _length = _bufferSize - sizeof(uint16_t) * 3 - 16;
+    _start = _end = 0;
 }
-
 RingBuffer::~RingBuffer()
 {
-	if (_createFlg)
-	{
-		if (_shmid > 0)
-		{
-			shmctl(_shmid, IPC_RMID, NULL);
-		}
-	}
-	else
-	{
-		if (_shmid > 0)
-		{
-			shmdt(_shmaddr);
-		}
-	}
-
-	if (_pmx != NULL)
-	{
-		delete _pmx;
-	}
+    free(_buffer);
+    pthread_mutex_destroy(&_mutex);
 }
 
 void RingBuffer::put(char* data)
 {
-	_pmx->lock();
+    pthread_mutex_lock(&_mutex);
 
-	uint16_t dlen = strlen(data);
-	uint16_t blen = *_length - *_end;
+    uint16_t dlen = strlen(data);
+    uint16_t blen = _length - *_end;
 
-	if (*_end > *_start)
-	{
-		if (dlen < blen)
-		{
-			strncpy(_buffer + *_end, data, dlen);
-			if (*_end - *_start == 1)
-			{ // Buffer is empty.
-				*_start = *_end;
-			}
-			*_end += dlen;
-		}
-		else
-		{
-			strncpy(_buffer + *_end, data, blen);
-			strncpy(_buffer, data + blen, dlen - blen);
-			if (*_end - *_start == 1)
-			{ // Buffer is empty.
-				*_start = *_end;
-				*_end = dlen - blen;
-			}
-			else
-			{
-				*_end = dlen - blen;
-				*_start = *_end + 1;
-			}
-		}
-	}
-	else if (*_end == *_start)
-	{
-		if (dlen < blen)
-		{
-			strncpy(_buffer + *_end, data, dlen);
-			*_end += dlen;
-		}
-		else
-		{
-			const char* errmsg = "RingBuffer Error: data is too long";
-			strcpy(_buffer + *_end, errmsg);
-			*_end += strlen(errmsg);
-		}
-	}
-	else
-	{    // *_end < *_start
-		if (dlen < *_start - *_end)
-		{
-			strncpy(_buffer + *_end, data, dlen);
-			*_end += dlen;
-			*_start = *_end + 1;
-		}
-		else
-		{
-			if (dlen < blen)
-			{
-				strncpy(_buffer + *_end, data, dlen);
-				*_end += dlen;
-				*_start = *_end + 1;
-			}
-			else
-			{
-				strncpy(_buffer + *_end, data, blen);
-				strncpy(_buffer, data + blen, dlen - blen);
-				*_start = *_end;
-				*_end = dlen - blen;
-			}
-		}
-	}
-	_pmx->unlock();
+    if (*_end > *_start)
+    {
+        if (dlen < blen)
+        {
+            strncpy(_buffer + *_end, data, dlen);
+            if (*_end - *_start == 1)
+            { // Buffer is empty.
+                *_start = *_end;
+            }
+            *_end += dlen;
+        }
+        else
+        {
+            strncpy(_buffer + *_end, data, blen);
+            strncpy(_buffer, data + blen, dlen - blen);
+            if (*_end - *_start == 1)
+            { // Buffer is empty.
+                *_start = *_end;
+                *_end = dlen - blen;
+            }
+            else
+            {
+                *_end = dlen - blen;
+                *_start = *_end + 1;
+            }
+        }
+    }
+    else if (*_end == *_start)
+    {
+        if (dlen < blen)
+        {
+            strncpy(_buffer + *_end, data, dlen);
+            *_end += dlen;
+        }
+        else
+        {
+            const char* errmsg = "RingBuffer Error: data is too long";
+            strcpy(_buffer + *_end, errmsg);
+            *_end += strlen(errmsg);
+        }
+    }
+    else
+    {    // *_end < *_start
+        if (dlen < *_start - *_end)
+        {
+            strncpy(_buffer + *_end, data, dlen);
+            *_end += dlen;
+            *_start = *_end + 1;
+        }
+        else
+        {
+            if (dlen < blen)
+            {
+                strncpy(_buffer + *_end, data, dlen);
+                *_end += dlen;
+                *_start = *_end + 1;
+            }
+            else
+            {
+                strncpy(_buffer + *_end, data, blen);
+                strncpy(_buffer, data + blen, dlen - blen);
+                *_start = *_end;
+                *_end = dlen - blen;
+            }
+        }
+    }
+    pthread_mutex_unlock(&_mutex);
 }
 
 int RingBuffer::get(char* buf, int length)
 {
-	int len = 0;
-	_pmx->lock();
+    int len = 0;
+    pthread_mutex_lock(&_mutex);
 
-	if (*_end > *_start)
-	{
-		if (length > *_end - *_start)
-		{
-			len = *_end - *_start;
-			if (len == 1)
-			{
-				len = 0;
-			}
-			strncpy(buf, _buffer + *_start, len);
-			*_start = *_end - 1;
-		}
-		else
-		{
-			len = length;
-			strncpy(buf, _buffer + *_start, len);
-			*_start = *_start + len;
-		}
-	}
-	else if (*_end < *_start)
-	{
-		int blen = *_length - *_start;
-		if (length > blen)
-		{
-			strncpy(buf, _buffer + *_start, blen);
-			*_start = 0;
-			if (length - (blen + *_end) > 0)
-			{
-				strncpy(buf + blen, _buffer, *_end);
-				len = blen + *_end;
-				if (*_end > 0)
-				{
-					*_start = *_end - 1;
-				}
-			}
-			else
-			{
-				strncpy(buf + blen, _buffer, length - blen);
-				len = length;
-				*_start = length - blen;
-			}
-		}
-		else
-		{
-			strncpy(buf, _buffer + *_start, length);
-			*_start += length;
-			len = length;
-		}
-	}
-	_pmx->unlock();
-	return len;
+    if (*_end > *_start)
+    {
+        if (length > *_end - *_start)
+        {
+            len = *_end - *_start;
+            if (len == 1)
+            {
+                len = 0;
+            }
+            strncpy(buf, _buffer + *_start, len);
+            *_start = *_end - 1;
+        }
+        else
+        {
+            len = length;
+            strncpy(buf, _buffer + *_start, len);
+            *_start = *_start + len;
+        }
+    }
+    else if (*_end < *_start)
+    {
+        int blen = _length - *_start;
+        if (length > blen)
+        {
+            strncpy(buf, _buffer + *_start, blen);
+            *_start = 0;
+            if (length - (blen + *_end) > 0)
+            {
+                strncpy(buf + blen, _buffer, *_end);
+                len = blen + *_end;
+                if (*_end > 0)
+                {
+                    *_start = *_end - 1;
+                }
+            }
+            else
+            {
+                strncpy(buf + blen, _buffer, length - blen);
+                len = length;
+                *_start = length - blen;
+            }
+        }
+        else
+        {
+            strncpy(buf, _buffer + *_start, length);
+            *_start += length;
+            len = length;
+        }
+    }
+    pthread_mutex_unlock(&_mutex);
+    return len;
 }
 
 void RingBuffer::reset()
 {
-	_pmx->lock();
-	if ( _start && _end )
-	{
-		*_start = *_end = 0;
-	}
-	else
-	{
-		throw Exception("RingBuffer can't reset. need to clear shared memory.", -1);
-	}
-	_pmx->unlock();
+    pthread_mutex_lock(&_mutex);
+    _start = _end = 0;
+    pthread_mutex_unlock(&_mutex);
 }
 
 /*=====================================
